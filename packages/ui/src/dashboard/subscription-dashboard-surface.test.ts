@@ -388,7 +388,7 @@ describe("SubscriptionDashboardSurface", () => {
     }));
   });
 
-  it("fetches cross-origin subscription links through the current origin for downloads", async () => {
+  it("uses the adapter download URL resolver before fetching subscription YAML", async () => {
     const dom = stubDocumentActions();
     const blob = new Blob(["mixed-port: 7890\n"], { type: "text/yaml" });
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, blob: vi.fn(async () => blob) }));
@@ -398,8 +398,13 @@ describe("SubscriptionDashboardSurface", () => {
     TestURL.revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", TestURL);
 
-    renderSurface(createAdapter(), {
-      0: [{ ...subscription, subscriptionUrl: "https://subscription.example.test/api/subscription/token-1?download=1" }],
+    const crossOriginSubscription = {
+      ...subscription,
+      subscriptionUrl: "https://subscription.example.test/download/token-1?download=1",
+    };
+    const resolveDownloadUrl = vi.fn(() => "http://localhost/download/token-1?download=1");
+    renderSurface(createAdapter({ resolveDownloadUrl }), {
+      0: [crossOriginSubscription],
       1: false,
       2: null,
       3: null,
@@ -407,7 +412,8 @@ describe("SubscriptionDashboardSurface", () => {
     await mocks.captures.buttons.find((props: any) => props.title === "下载订阅配置").onClick();
     await flushPromises();
 
-    expect(fetchMock).toHaveBeenCalledWith("http://localhost/api/subscription/token-1?download=1");
+    expect(resolveDownloadUrl).toHaveBeenCalledWith(crossOriginSubscription);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost/download/token-1?download=1");
     expect(dom.anchor.download).toBe("Primary.yaml");
   });
 

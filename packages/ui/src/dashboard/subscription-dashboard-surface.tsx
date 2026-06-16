@@ -55,6 +55,7 @@ export type DashboardSurfaceAdapter = {
   deleteSubscription: (id: string) => Promise<void>;
   refreshSubscription: (id: string) => Promise<RefreshSubscriptionResponse>;
   updateSubscriptionSettings: (id: string, payload: UpdateSettingsPayload) => Promise<void>;
+  resolveDownloadUrl?: (subscription: Subscription) => string;
   renderAnnouncement?: (context: { user: User }) => React.ReactNode;
   renderHeaderActions?: (context: { user: User }) => React.ReactNode;
   renderExtraQuickActions?: (context: { user: User }) => React.ReactNode;
@@ -86,16 +87,6 @@ function triggerBrowserDownload(href: string, filename: string) {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-}
-
-function buildSameOriginDownloadUrl(subscriptionUrl: string): string {
-  try {
-    const url = new URL(subscriptionUrl, window.location.href);
-    if (!url.pathname.includes("/api/subscription")) return subscriptionUrl;
-    return `${window.location.origin}${url.pathname}${url.search}`;
-  } catch {
-    return subscriptionUrl;
-  }
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -217,7 +208,7 @@ export function SubscriptionDashboardSurface({ adapter }: Props) {
   const downloadSubscription = async (subscription: Subscription) => {
     const filename = buildYamlDownloadFilename(subscription.name);
     try {
-      const response = await fetch(buildSameOriginDownloadUrl(subscription.subscriptionUrl));
+      const response = await fetch(adapter.resolveDownloadUrl?.(subscription) ?? subscription.subscriptionUrl);
       if (!response.ok) throw new Error(`Download failed with status ${response.status}`);
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
