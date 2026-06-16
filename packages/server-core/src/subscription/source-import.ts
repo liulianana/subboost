@@ -11,12 +11,8 @@ import {
 } from "@subboost/core/subscription/import-error";
 import { tryNormalizeSubscriptionUrlInput } from "@subboost/core/subscription/url-input";
 import type { ParseResult, ParsedNode } from "@subboost/core/types/node";
-
-export const SUBSCRIPTION_IMPORT_USER_AGENTS = [
-  "v2rayN/7.20.4",
-  "mihomo/1.19.24",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-] as const;
+import { shouldTryClashMetaForV2raynPayload } from "./fetch-profile-heuristics";
+import { SUBSCRIPTION_IMPORT_USER_AGENTS } from "./user-agents";
 
 export type SourceImportPurpose = "content" | "userinfo";
 
@@ -103,6 +99,22 @@ function createErrorInfo(message: string, httpStatus?: number): SubscriptionImpo
 
 function isUsableParsedAttempt(attempt: ParsedAttempt): attempt is Extract<ParsedAttempt, { ok: true }> {
   return attempt.ok && attempt.parsed.nodes.length > 0 && !looksLikeClientUpdatePlaceholderNodes(attempt.parsed.nodes);
+}
+
+function shouldContinueAfterCleanAttempt(params: {
+  attempt: ParsedAttempt;
+  currentUserAgent: string;
+  nextUserAgent?: string;
+}): boolean {
+  const { attempt, currentUserAgent, nextUserAgent } = params;
+  if (!isUsableParsedAttempt(attempt) || attempt.parsed.errors.length > 0) return true;
+  if (
+    currentUserAgent === SUBSCRIPTION_IMPORT_USER_AGENTS[0] &&
+    nextUserAgent === SUBSCRIPTION_IMPORT_USER_AGENTS[1]
+  ) {
+    return shouldTryClashMetaForV2raynPayload(attempt.content, attempt.parsed);
+  }
+  return false;
 }
 
 function toFailure(attempt: ParsedAttempt | null, fallback = "获取 url 失败"): SourceImportFailure {
@@ -264,14 +276,23 @@ export async function importSubscriptionFromUrl(
   const userAgents = options.userAgents?.length ? options.userAgents : SUBSCRIPTION_IMPORT_USER_AGENTS;
   let best: ParsedAttempt | null = null;
 
-  for (const userAgent of userAgents) {
+  for (let index = 0; index < userAgents.length; index += 1) {
+    const userAgent = userAgents[index];
     const attempt = await fetchAndParseWithUserAgent(url, userAgent, {
       timeoutMs,
       maxBytes,
       fetchText: options.fetchText,
     });
     best = pickBetterAttempt(best, attempt);
-    if (isUsableParsedAttempt(attempt) && attempt.parsed.errors.length === 0) break;
+    if (
+      !shouldContinueAfterCleanAttempt({
+        attempt,
+        currentUserAgent: userAgent,
+        nextUserAgent: userAgents[index + 1],
+      })
+    ) {
+      break;
+    }
   }
 
   if (!best || !best.ok || !isUsableParsedAttempt(best)) {

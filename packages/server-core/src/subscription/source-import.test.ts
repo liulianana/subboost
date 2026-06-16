@@ -15,6 +15,11 @@ proxies:
     password: secret
 `;
 
+function ssLink(name = "SS Node"): string {
+  const credential = Buffer.from("aes-128-gcm:secret").toString("base64url");
+  return `ss://${credential}@ss.example.com:8388#${encodeURIComponent(name)}`;
+}
+
 describe("importSubscriptionFromUrl", () => {
   it("tries client user agents and keeps supplemental userinfo headers", async () => {
     const fetchText = vi.fn(async (request: SourceImportTransportRequest): Promise<SourceImportTransportResult> => {
@@ -51,6 +56,39 @@ describe("importSubscriptionFromUrl", () => {
       totalParsed: 1,
       totalFailed: 0,
     });
+    expect(fetchText).toHaveBeenCalledWith(expect.objectContaining({ userAgent: "v2rayN/7.20.4" }));
+    expect(fetchText).toHaveBeenCalledWith(expect.objectContaining({ userAgent: "mihomo/1.19.24" }));
+  });
+
+  it("continues to Mihomo when the v2rayN response is link-only and may be incomplete", async () => {
+    const fetchText = vi.fn(async (request: SourceImportTransportRequest): Promise<SourceImportTransportResult> => {
+      if (request.userAgent.startsWith("v2rayN/")) {
+        return { ok: true, content: ssLink("v2rayn"), headers: { "content-type": "text/plain" } };
+      }
+      return {
+        ok: true,
+        content: [
+          "proxies:",
+          "  - name: clash-a",
+          "    type: trojan",
+          "    server: clash-a.example.com",
+          "    port: 443",
+          "    password: secret",
+          "  - name: clash-b",
+          "    type: trojan",
+          "    server: clash-b.example.com",
+          "    port: 443",
+          "    password: secret",
+        ].join("\n"),
+        headers: { "content-type": "text/yaml" },
+      };
+    });
+
+    const result = await importSubscriptionFromUrl({ url: "https://example.com/sub.yaml" }, { fetchText });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.parsedNodes.map((node) => node.name)).toEqual(["clash-a", "clash-b"]);
     expect(fetchText).toHaveBeenCalledWith(expect.objectContaining({ userAgent: "v2rayN/7.20.4" }));
     expect(fetchText).toHaveBeenCalledWith(expect.objectContaining({ userAgent: "mihomo/1.19.24" }));
   });
