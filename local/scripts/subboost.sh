@@ -126,7 +126,7 @@ write_env_value() {
   local value="$2"
   local tmp="$TMP_DIR/env"
   mkdir -p "$TMP_DIR"
-  read_env_file | awk -v key="$key" 'index($0, key "=") != 1 { print }' > "$tmp"
+  read_env_file | awk -F= -v key="$key" '$1 != key { print }' > "$tmp"
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
   install_secret_file "$tmp" "$ENV_FILE"
 }
@@ -199,16 +199,56 @@ service_status_text() {
 }
 
 health_status_text() {
+  health_status_label "$(health_status_code)"
+}
+
+health_status_code() {
   local port base
   port="$(port_number "${SUBBOOST_PORT:-3000}")"
   base="http://127.0.0.1:$port"
-  if command -v curl >/dev/null 2>&1 && curl -fsS "$base/api/health/live" >/dev/null 2>&1 && curl -fsS "$base/api/health/ready" >/dev/null 2>&1; then
-    printf '正常\n'
-  elif command -v curl >/dev/null 2>&1 && curl -fsS "$base/api/health/live" >/dev/null 2>&1; then
-    printf '应用已启动，数据库未就绪\n'
+  if ! command -v curl >/dev/null 2>&1; then
+    printf 'curl-missing\n'
+  elif curl -fsS "$base/api/health/live" >/dev/null 2>&1 && curl -fsS "$base/api/health/ready" >/dev/null 2>&1; then
+    printf 'ok\n'
+  elif curl -fsS "$base/api/health/live" >/dev/null 2>&1; then
+    printf 'not-ready\n'
   else
-    printf '异常\n'
+    printf 'unhealthy\n'
   fi
+}
+
+health_status_label() {
+  case "$1" in
+    ok) printf '正常\n' ;;
+    not-ready) printf '应用已启动，数据库未就绪\n' ;;
+    curl-missing) printf '缺少 curl\n' ;;
+    *) printf '异常\n' ;;
+  esac
+}
+
+wait_for_health() {
+  local attempts="${SUBBOOST_DOCTOR_HEALTH_ATTEMPTS:-15}"
+  local interval="${SUBBOOST_DOCTOR_HEALTH_INTERVAL_SECONDS:-2}"
+  local index status
+  for index in $(seq 1 "$attempts"); do
+    status="$(health_status_code)"
+    if [ "$status" = "ok" ]; then
+      return 0
+    fi
+    if [ "$index" != "$attempts" ]; then
+      sleep "$interval"
+    fi
+  done
+  return 1
+}
+
+doctor_health_failure_message() {
+  local status="$1"
+  case "$status" in
+    not-ready) printf 'Health check failed: database is not ready.' ;;
+    curl-missing) printf 'Health check failed: curl command is missing.' ;;
+    *) printf 'Health check failed: app is not responding.' ;;
+  esac
 }
 
 status_cmd() {
@@ -264,27 +304,27 @@ backup_cmd() {
   load_env
   sudo_do mkdir -p "$BACKUP_DIR"
   local stamp db_tmp db_out env_out
+  local -a sql_backups env_backups
+  local i
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   db_tmp="$BACKUP_DIR/subboost-$stamp.sql.gz.partial"
   db_out="$BACKUP_DIR/subboost-$stamp.sql.gz"
   env_out="$BACKUP_DIR/subboost-$stamp.env"
   compose exec -T db pg_dump -U "${POSTGRES_USER:-subboost}" -d "${POSTGRES_DB:-subboost}" | gzip -c | sudo_do tee "$db_tmp" >/dev/null
   sudo_do mv "$db_tmp" "$db_out"
-  if is_root; then
-    install -m 600 "$ENV_FILE" "$env_out"
-  else
-    sudo install -m 600 "$ENV_FILE" "$env_out"
-  fi
-  while IFS= read -r old_file; do
-    [ -n "$old_file" ] && sudo_do rm -f "$old_file"
-  done <<EOF
-$(ls -1t "$BACKUP_DIR"/subboost-*.sql.gz 2>/dev/null | sed -n '11,$p')
-EOF
-  while IFS= read -r old_file; do
-    [ -n "$old_file" ] && sudo_do rm -f "$old_file"
-  done <<EOF
-$(ls -1t "$BACKUP_DIR"/subboost-*.env 2>/dev/null | sed -n '11,$p')
-EOF
+  sudo_do install -m 600 "$ENV_FILE" "$env_out"
+
+  shopt -s nullglob
+  sql_backups=("$BACKUP_DIR"/subboost-*.sql.gz)
+  env_backups=("$BACKUP_DIR"/subboost-*.env)
+  shopt -u nullglob
+
+  for ((i = 0; i < ${#sql_backups[@]} - 10; i++)); do
+    sudo_do rm -f -- "${sql_backups[$i]}"
+  done
+  for ((i = 0; i < ${#env_backups[@]} - 10; i++)); do
+    sudo_do rm -f -- "${env_backups[$i]}"
+  done
   say "Backup written:"
   say "  $db_out"
   say "  $env_out"
@@ -306,6 +346,12 @@ doctor_cmd() {
     grep -q "^$key=" "$ENV_FILE" || die "Missing $key in $ENV_FILE"
   done
   compose config >/dev/null
+  if ! wait_for_health; then
+    local health_status
+    health_status="$(health_status_code)"
+    status_cmd
+    die "$(doctor_health_failure_message "$health_status")"
+  fi
   status_cmd
   say "Doctor: OK"
 }
@@ -351,6 +397,8 @@ main() {
   esac
 }
 
-trap 'rm -rf "$TMP_DIR"' EXIT
-DOCKER_RUNNER=""
-main "$@"
+if [ "${SUBBOOST_SCRIPT_SOURCE_ONLY:-0}" != "1" ]; then
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  DOCKER_RUNNER=""
+  main "$@"
+fi
