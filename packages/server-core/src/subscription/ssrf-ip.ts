@@ -51,6 +51,13 @@ function isPrivateOrReservedIPv4(ip: string): boolean {
   return false;
 }
 
+function isBenchmarkReservedIPv4(ip: string): boolean {
+  const ipInt = ipv4ToInt(ip);
+  const baseInt = ipv4ToInt("198.18.0.0");
+  if (ipInt === null || baseInt === null) return false;
+  return ipv4InCidr(ipInt, baseInt, 15);
+}
+
 function ipv4FromMappedHexTail(value: string): string | null {
   const parts = value.split(":");
   if (parts.length !== 2) return null;
@@ -103,5 +110,11 @@ export function isPrivateOrReservedIp(hostname: string): boolean {
   const version = isIP(hostname);
   if (version === 4) return isPrivateOrReservedIPv4(hostname);
   if (version === 6) return isPrivateOrReservedIPv6(hostname);
+  return false;
+}
+
+export function isBenchmarkReservedIp(hostname: string): boolean {
+  const version = isIP(hostname);
+  if (version === 4) return isBenchmarkReservedIPv4(hostname);
   return false;
 }

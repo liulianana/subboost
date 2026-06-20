@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPrivateOrReservedIp } from "./ssrf-ip";
+import { isBenchmarkReservedIp, isPrivateOrReservedIp } from "./ssrf-ip";
 
 describe("SSRF IP classification", () => {
   it("marks private, reserved, and documentation IPv4 ranges as unsafe", () => {
@@ -46,5 +46,13 @@ describe("SSRF IP classification", () => {
     expect(isPrivateOrReservedIp("2001:db80::1")).toBe(false);
     expect(isPrivateOrReservedIp("::ffff:8.8.8.8")).toBe(false);
     expect(isPrivateOrReservedIp("::ffff:808:808")).toBe(false);
+  });
+
+  it("identifies the benchmark range commonly used by fake-ip DNS", () => {
+    expect(isBenchmarkReservedIp("198.18.0.1")).toBe(true);
+    expect(isBenchmarkReservedIp("198.19.255.254")).toBe(true);
+    expect(isBenchmarkReservedIp("198.20.0.1")).toBe(false);
+    expect(isBenchmarkReservedIp("10.0.0.1")).toBe(false);
+    expect(isBenchmarkReservedIp("example.test")).toBe(false);
   });
 });

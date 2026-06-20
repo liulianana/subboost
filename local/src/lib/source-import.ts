@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import {
   createSubscriptionImportErrorInfo,
   inferSubscriptionImportErrorCategory,
@@ -12,13 +13,17 @@ import {
   type SourceImportTransportRequest,
   type SourceImportTransportResult,
 } from "@subboost/server-core/subscription";
-import { isPrivateOrReservedIp } from "@subboost/server-core/subscription/ssrf-ip";
+import {
+  isBenchmarkReservedIp,
+  isPrivateOrReservedIp,
+} from "@subboost/server-core/subscription/ssrf-ip";
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 const USERINFO_TIMEOUT_MS = 8000;
 const USERINFO_MAX_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
+const DOH_TIMEOUT_MS = 4000;
 
 function headersToRecord(headers: Headers): Record<string, string> {
   const out: Record<string, string> = {};
@@ -61,6 +66,51 @@ function normalizeHostname(hostname: string): string {
   return hostname.replace(/^\[|\]$/g, "").toLowerCase();
 }
 
+function normalizeLookupAddresses(addresses: string[]): string[] {
+  return addresses.filter((ip) => typeof ip === "string" && ip.trim());
+}
+
+function shouldRetryFakeIpWithDoh(addresses: string[]): boolean {
+  const unsafe = addresses.filter((ip) => isPrivateOrReservedIp(ip));
+  return unsafe.length > 0 && unsafe.every((ip) => isBenchmarkReservedIp(ip));
+}
+
+async function resolveHostnameByDohDirect(hostname: string): Promise<string[]> {
+  const out = new Set<string>();
+
+  for (const type of ["A", "AAAA"]) {
+    const url = `https://dns.google/resolve?name=${encodeURIComponent(hostname)}&type=${type}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DOH_TIMEOUT_MS);
+    let response: Response | null = null;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/dns-json",
+          "User-Agent": "SubBoost Local DoH/1.0",
+        },
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } catch {
+      response = null;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response?.ok) continue;
+
+    const body = (await response.json().catch(() => null)) as { Answer?: Array<{ data?: unknown }> } | null;
+    if (!body || !Array.isArray(body.Answer)) continue;
+    for (const answer of body.Answer) {
+      const data = typeof answer?.data === "string" ? answer.data.trim() : "";
+      if (data && isIP(data)) out.add(data);
+    }
+  }
+
+  return Array.from(out);
+}
+
 async function validatePublicFetchTarget(url: string): Promise<SourceImportTransportResult | null> {
   let parsed: URL;
   try {
@@ -87,7 +137,12 @@ async function validatePublicFetchTarget(url: string): Promise<SourceImportTrans
   }
 
   const records = await lookup(hostname, { all: true, verbatim: true }).catch(() => []);
-  if (records.some((record) => isPrivateOrReservedIp(record.address))) {
+  const addresses = normalizeLookupAddresses(records.map((record) => record.address));
+  const finalAddresses = shouldRetryFakeIpWithDoh(addresses)
+    ? normalizeLookupAddresses(await resolveHostnameByDohDirect(hostname)).filter(Boolean)
+    : addresses;
+  const addressesToCheck = finalAddresses.length > 0 ? finalAddresses : addresses;
+  if (addressesToCheck.some((address) => isPrivateOrReservedIp(address))) {
     return toSecurityFailure("禁止访问本机或内网地址");
   }
 

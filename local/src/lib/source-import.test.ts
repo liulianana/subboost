@@ -88,6 +88,42 @@ describe("local source import transport", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("rechecks fake-ip DNS answers with DoH before fetching the subscription", async () => {
+    mocks.lookup.mockResolvedValueOnce([{ address: "198.18.3.6" }]);
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(response(JSON.stringify({ Answer: [{ data: "93.184.216.34" }] }), { status: 200 }))
+      .mockResolvedValueOnce(response(JSON.stringify({ Answer: [] }), { status: 200 }))
+      .mockResolvedValueOnce(response("ss://node", { status: 200 }));
+
+    await expect(runTransport("https://api.dler.io/sub")).resolves.toMatchObject({
+      ok: true,
+      content: "ss://node",
+    });
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("https://dns.google/resolve?name=api.dler.io&type=A"),
+      expect.objectContaining({ method: "GET" })
+    );
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      3,
+      "https://api.dler.io/sub",
+      expect.objectContaining({ method: "GET", redirect: "manual" })
+    );
+  });
+
+  it("keeps blocking fake-ip DNS answers when DoH confirms an unsafe target", async () => {
+    mocks.lookup.mockResolvedValueOnce([{ address: "198.18.3.6" }]);
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(response(JSON.stringify({ Answer: [{ data: "10.0.0.2" }] }), { status: 200 }))
+      .mockResolvedValueOnce(response(JSON.stringify({ Answer: [] }), { status: 200 }));
+
+    await expect(runTransport("https://fake-ip-private.example/sub")).resolves.toMatchObject({
+      ok: false,
+      publicReason: "禁止访问本机或内网地址",
+    });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects additional private IPv4 and IPv6 address ranges", async () => {
     const blockedUrls = [
       "http://0.0.0.0/sub",
