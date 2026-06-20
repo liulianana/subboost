@@ -118,3 +118,26 @@ export function isBenchmarkReservedIp(hostname: string): boolean {
   if (version === 4) return isBenchmarkReservedIPv4(hostname);
   return false;
 }
+
+export function normalizeResolvedIpAddresses(addresses: readonly string[]): string[] {
+  return addresses
+    .map((ip) => (typeof ip === "string" ? ip.trim() : ""))
+    .filter(Boolean);
+}
+
+export function shouldRecheckFakeIpDnsAnswers(addresses: readonly string[]): boolean {
+  const normalized = normalizeResolvedIpAddresses(addresses);
+  const unsafe = normalized.filter((ip) => isPrivateOrReservedIp(ip));
+  return unsafe.length > 0 && unsafe.every((ip) => isBenchmarkReservedIp(ip));
+}
+
+export function selectDnsAddressesAfterFakeIpRecheck(
+  systemAddresses: readonly string[],
+  recheckAddresses: readonly string[]
+): string[] {
+  const normalizedSystemAddresses = normalizeResolvedIpAddresses(systemAddresses);
+  if (!shouldRecheckFakeIpDnsAnswers(normalizedSystemAddresses)) return normalizedSystemAddresses;
+
+  const normalizedRecheckAddresses = normalizeResolvedIpAddresses(recheckAddresses);
+  return normalizedRecheckAddresses.length > 0 ? normalizedRecheckAddresses : normalizedSystemAddresses;
+}

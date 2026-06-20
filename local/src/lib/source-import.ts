@@ -14,8 +14,10 @@ import {
   type SourceImportTransportResult,
 } from "@subboost/server-core/subscription";
 import {
-  isBenchmarkReservedIp,
   isPrivateOrReservedIp,
+  normalizeResolvedIpAddresses,
+  selectDnsAddressesAfterFakeIpRecheck,
+  shouldRecheckFakeIpDnsAnswers,
 } from "@subboost/server-core/subscription/ssrf-ip";
 
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -64,15 +66,6 @@ function toSecurityFailure(message: string): SourceImportTransportResult {
 
 function normalizeHostname(hostname: string): string {
   return hostname.replace(/^\[|\]$/g, "").toLowerCase();
-}
-
-function normalizeLookupAddresses(addresses: string[]): string[] {
-  return addresses.filter((ip) => typeof ip === "string" && ip.trim());
-}
-
-function shouldRetryFakeIpWithDoh(addresses: string[]): boolean {
-  const unsafe = addresses.filter((ip) => isPrivateOrReservedIp(ip));
-  return unsafe.length > 0 && unsafe.every((ip) => isBenchmarkReservedIp(ip));
 }
 
 async function resolveHostnameByDohDirect(hostname: string): Promise<string[]> {
@@ -137,9 +130,9 @@ async function validatePublicFetchTarget(url: string): Promise<SourceImportTrans
   }
 
   const records = await lookup(hostname, { all: true, verbatim: true }).catch(() => []);
-  const addresses = normalizeLookupAddresses(records.map((record) => record.address));
-  const finalAddresses = shouldRetryFakeIpWithDoh(addresses)
-    ? normalizeLookupAddresses(await resolveHostnameByDohDirect(hostname)).filter(Boolean)
+  const addresses = normalizeResolvedIpAddresses(records.map((record) => record.address));
+  const finalAddresses = shouldRecheckFakeIpDnsAnswers(addresses)
+    ? selectDnsAddressesAfterFakeIpRecheck(addresses, await resolveHostnameByDohDirect(hostname))
     : addresses;
   const addressesToCheck = finalAddresses.length > 0 ? finalAddresses : addresses;
   if (addressesToCheck.some((address) => isPrivateOrReservedIp(address))) {
