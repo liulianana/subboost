@@ -17,6 +17,7 @@
     "./node-identity": "./src/node-identity.ts",
     "./parser": "./src/parser/index.ts",
     "./parser/*": "./src/parser/*.ts",
+    "./proxy-group-advanced": "./src/proxy-group-advanced.ts",
     "./proxy-group-name": "./src/proxy-group-name.ts",
     "./proxy-group-advanced-mode": "./src/proxy-group-advanced-mode.ts",
     "./proxy-group-targets": "./src/proxy-group-targets.ts",
